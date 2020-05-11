@@ -1,0 +1,1246 @@
+#!/usr/bin/perl
+#***********************************************************************
+# $Source: /admin/unix_dev/KCHgather/Source/RCS/KCH_gather.pl,v $
+# $Revision: 1.6 $
+# $Date: 2011/02/04 14:51:47 $
+# $Author: kchutcheson $
+# $State: Exp $
+#***********************************************************************
+# Title         : KCH_gather.pl
+# Author        : Kenny Hutcheson < kenny.hutcheson@kchutcheson.co.uk >
+# Date          : 14/01/2011
+# Requires      : Perl
+# Category      : System Configuration
+#***********************************************************************
+# Description
+#
+# This script query's a Linux system and generates XML output that can
+# be imported into a database.
+#
+#***********************************************************************
+## Date:        Version:  Updater:                Notes:
+## 17/01/2011   1.0       Kenny hutcheson         Inital Version
+## 20/01/2011   1.1       Kenny hutcheson         Created one function called hostfiles that replaces 
+##						  &nsswitch; &resolv; &hosts;
+## 20/01/2011	1.2	  Kenny Hutcheson	  Taken Comments out of the TSM files, not interested
+##						  in the comments or blank lines.
+## 24/01/2011	1.3	  Kenny Hutcheson         Added XML tags in the first two lines of the output 
+##                                                file.
+##
+## 27/01/2011	1.4	  Kenny Hutcheson	  Stable release, output inputs into database without
+##					          any issues.
+## 04/02/2011   1.5	  Kenny Hutcheson         Update script to check for tsm-client service
+##                                                for the status output has some funny characters in it.
+## 04/02/2011   1.6       Kenny Hutcheson         Change the way dmidecode is run for on RHEL4 there
+##						  isn't any options so don't get system info.
+##
+#***********************************************************************
+
+#***********************************************************************
+# Show any warnings.
+#***********************************************************************
+#use warnings;
+use File::stat;
+use Switch;
+#***********************************************************************
+# Set SMB variable to no.
+#***********************************************************************
+$smb = "no";
+#***********************************************************************
+# Output file just called `uname -n` so the hostsname.
+#***********************************************************************
+my $filename=`uname -n`;
+chomp($filename);
+#***********************************************************************
+# Open file handle to print all data to the logfile.
+#***********************************************************************
+open(LOGFILE, ">/tmp/$filename.xml") || die("Cannot open /tmp/$filename.xml");
+#***********************************************************************
+# Get the time.
+#***********************************************************************
+$time = localtime();
+#***********************************************************************
+# Call Main function.
+#***********************************************************************
+main();
+#***********************************************************************
+# Close file handle
+#***********************************************************************
+close(LOGFILE);
+#***********************************************************************
+# Main function, that calls all subfunctions.
+#***********************************************************************
+sub main {
+   print LOGFILE '<?xml version="1.0" encoding="utf-8" ?>';
+   print LOGFILE "\n<!-- Output generated from the Server Info Collector utility - $time  -->\n"; 
+   print LOGFILE "<Output>\n";
+   print LOGFILE " <General_Table>\n";
+   print LOGFILE "  <General>\n";
+        &fqdn;
+	&hostname;
+   print LOGFILE "   <Description/>\n";
+   print LOGFILE "   <Service/>\n";
+   print LOGFILE "   <ServerFunction/>\n";
+   print LOGFILE "   <SourceLocation/>\n";
+   print LOGFILE "   <DestinationLocation/>\n";
+   print LOGFILE "   <ClusterName/>\n";
+   print LOGFILE "   <ClusterQuorum/>\n";
+   print LOGFILE "   <DRTier/>\n";
+	&oslevel;
+	&runlevel;
+	&hardware;
+        &virtualmachine;
+   print LOGFILE "   <MigrationTool/>\n";
+   print LOGFILE "   <SPOC/>\n";
+   print LOGFILE "  </General>\n";
+   print LOGFILE " </General_Table>\n";
+        &swap;
+     
+# Storage Ones
+ 	&volumegroups;
+	&whatmpathdevices;
+	&physicalvolumes;
+	&logicalvolumes;
+	&fstab;
+	&mountpoints;
+	&fc_hosts;
+	&nfs_mounts;
+#
+	&network;
+	&routing_table;
+#
+	&scripts;
+	&chkconfig;
+	&selinux;
+	&hostfiles;
+	&kernel;
+	&cron;
+	&packageinfo;
+	#&tsm;
+	&samba;
+	&snmp;
+	&user_info;
+	&tsm;
+   print LOGFILE " </Output>\n";
+	
+}
+
+#***********************************************************************
+# Get all DMIDECODE information upfront, because RHEL 4 dosn't support
+# the options so need to go right through the output.
+#***********************************************************************
+sub dmidecode {
+  my $sysinfo = 0 ;
+  my @sysinfo ;
+  if ( $glob_osbase =~ /4/ ) {
+   @dmidecode = `/usr/sbin/dmidecode`;
+   foreach $dmi_line  (@dmidecode) {
+    if ( $sysinfo =~ /1/ ) {
+     switch ($dmi_line)
+     {
+      case (/Manufacturer/) { (undef, $hardware_man) = split /:/, $dmi_line ; push(@sysinfo, $hardware_man) ; next }
+      case (/Product Name/) { (undef, $product_name) = split /:/, $dmi_line ; push(@sysinfo, $product_name) ; next }
+     }
+    }
+     if ( $dmi_line =~ /System Information/ ) {
+     $sysinfo++
+     }
+   }
+    $hardware_man = $sysinfo[0];
+    $product_name = $sysinfo[1];
+    @processor = @dmidecode;
+    @memory = @dmidecode;
+
+  } else {
+   $hardware_man=`/usr/sbin/dmidecode -s system-manufacturer`;
+   $product_name=`/usr/sbin/dmidecode -s system-product-name`;
+   $serial_number=`/usr/sbin/dmidecode -s system-serial-number`;
+   @processor = `/usr/sbin/dmidecode -t processor`;
+   @memory = `/usr/sbin/dmidecode -t memory`;
+   # system from the dmidecode output.
+   $manufacturer = $hardware_man;
+  }
+
+}
+    
+#***********************************************************************
+# Work out fully qualified domain name.
+#***********************************************************************
+sub fqdn {
+  my $hostname= `/bin/hostname`; 
+  chomp($hostname);
+  my @fqdn = `/usr/bin/nslookup $hostname`;
+  my $set = 0;
+  foreach $lookupline (@fqdn) {
+   if ( $lookupline =~ /Name:/ ) {
+     (undef,$name) = split /:/, $lookupline;
+     chomp($name);
+     $name = trim($name);
+     print LOGFILE "   <FQDN>$name</FQDN>\n";
+     $fqdn_gloabl = $name;
+     chomp($fqdn_gloabl);
+     trim($fqdn_gloabl);
+     $fqdn_gloabl = trim($fqdn_gloabl);
+     $set++;
+   } 
+  }
+  if ( $set =~ /0/ ) {
+   print LOGFILE "   <FQDN>$hostname</FQDN>\n";
+   $fqdn_gloabl = $hostname;
+   chomp($fqdn_gloabl);
+   $fqdn_gloabl = trim($fqdn_gloabl);
+  }
+}
+
+#***********************************************************************
+# Work out the hostname
+#***********************************************************************
+sub hostname {
+   my $hostname= `/bin/hostname`;
+   chomp($hostname);
+   $hostname = trim($hostname);
+   print LOGFILE "   <ServerName>$hostname</ServerName>\n";
+}
+#***********************************************************************
+# Work out the revision of Linux that is running along Architecture
+#***********************************************************************
+sub oslevel {
+   if ( -e "/etc/redhat-release" ) {
+    my $osbaselevel= `/bin/cat /etc/redhat-release`;
+    my $type = `/bin/uname -m`;
+    chomp($type);
+    @baselevel = split /\s+/, $osbaselevel;
+    @osbase = split /\./, $baselevel[6];
+    #print LOGFILE "  <OSDetail>\n";
+    $glob_osbase = $baselevel[6];
+    print LOGFILE "   <OperatingSystem>$baselevel[0] $baselevel[1]</OperatingSystem>\n"; 
+    print LOGFILE "   <OSVersion>$baselevel[6]</OSVersion>\n";
+    print LOGFILE "   <OSArchitecture>$type</OSArchitecture>\n";
+    print LOGFILE "   <OSServicePack/>\n";
+    print LOGFILE "   <OSBaseLevel>$osbase[0]</OSBaseLevel>\n";
+    print LOGFILE "   <OSReleaseLevel>$osbase[1]</OSReleaseLevel>\n";
+    #print LOGFILE "  </OSDetail>\n";
+  } else {
+    my $type = `/bin/uname -m`;
+    #print LOGFILE "  <OSDetail>\n";
+    print LOGFILE "   <OperatingSystem>Unknown</OperatingSystem>\n";
+    print LOGFILE "   <OSVersion>Unknown</OSVersion>\n";
+    print LOGFILE "   <OSArchitecture>$type</OSArchitecture>\n";
+    print LOGFILE "   <OSServicePack/>\n";
+    print LOGFILE "   <OSBaseLevel>Unknown<</OSBaseLevel>\n";
+    print LOGFILE "   <OSReleaseLevel>Unknown<</OSReleaseLevel>\n";
+    #print LOGFILE "  </OSDetail>\n";
+  }
+}
+
+#***********************************************************************
+# Display hardware information of the system in question
+#***********************************************************************
+sub hardware {
+ if ( -e "/usr/sbin/dmidecode" ) {
+    # CALL DMIDECODE sub routine
+    &dmidecode;
+ #   my $hardware_man=`/usr/sbin/dmidecode -s system-manufacturer`;
+ #   my $product_name=`/usr/sbin/dmidecode -s system-product-name`;
+ #   my $serial_number=`/usr/sbin/dmidecode -s system-serial-number`;
+ #   my @processor = `/usr/sbin/dmidecode -t processor`;
+ #   my @memory = `/usr/sbin/dmidecode -t memory`;
+
+   my @dim_size;
+   my @core_count;
+   
+   my $socket_count = grep /Status: Populated/, @processor;
+   my $dim_slots = grep /  Size:/, @memory;
+   my $dim_line;
+
+
+   if ( "$product_name" =~ /VMware Virtual Platform/ ) {
+     $pattern_string = "Enabled Size";
+     foreach $dimm_line (@memory) {
+      if ( $dimm_line =~ /$pattern_string/ ) {
+       (undef,undef,undef,$size,undef) = split /\s+/, $dimm_line;
+       if ( $size !~ /No/ ) {
+         push(@dim_size, $size);
+       }
+       push(@no_slots, $dim_line);
+      }
+     }
+   } else {
+    $pattern_string = "Size:.[0-9]";
+    foreach $dimm_line (@memory) {
+     if ( $dimm_line =~ /$pattern_string/ ) {
+       (undef,undef,$size,undef) = split /\s+/, $dimm_line;
+       if ( $size !~ /No/ ) {
+         push(@dim_size, $size);
+       }
+       push(@no_slots, $dim_line);
+     }
+    }
+   }
+
+   foreach $cpu_line (@processor) {
+     if ( $cpu_line =~ /Core Count:/ ) {
+       (undef,undef,undef, $core_count) = split /\s+/, $cpu_line;
+       push(@core_count, $core_count);
+     } elsif ( $cpu_line =~ /Core Enabled:/ ) {
+       (undef,undef,undef, $core_enabled) = split /\s+/, $cpu_line;
+       push(@core_enabled, $core_enabled);
+     } elsif ( $cpu_line =~ /Max Speed:/ ) {
+       (undef,undef,undef,$mx_speed,undef ) = split /\s+/, $cpu_line;
+       push(@cpu_speed, $mx_speed); 
+     } elsif ( $cpu_line =~ /Current Speed:/ ) {
+       (undef,undef,undef, $cn_speed,undef ) = split /\s+/, $cpu_line;
+       push(@cur_speed, $cn_speed);
+     }
+   }
+   my $tot_core_count = 0;
+   my $tot_core_enabled = 0;
+   my $memory_size = 0; 
+   $number_dimms = scalar(@dim_size);
+   $total_dim_slots = scalar(@no_slots);
+
+   #***********************************************************************
+   # Work out the number of cores/ cores enabled and the memory size of the
+   # system from the dmidecode output.
+   #***********************************************************************
+   ($tot_core_count+=$_) for @core_count;
+   ($tot_core_enabled+=$_) for @core_enabled;
+   if ( scalar(@dim_size) !~ /1/ ) {
+       ($memory_size+=$_) for @dim_size; 
+   } else {
+     $memory_size = $dim_size[0];
+   }
+
+   chomp($hardware_man);
+   chomp($product_name);
+   chomp($serial_number);
+
+   #***********************************************************************
+   # XML output written to LOGFILE handle.
+   #***********************************************************************
+   print LOGFILE "   <SourceHardware>$hardware_man $product_name</SourceHardware>\n";
+   print LOGFILE "   <DestinationHardware/>\n";
+   #print LOGFILE "  <CPUDetail>\n";
+   print LOGFILE "   <CPUSockets>$socket_count</CPUSockets>\n";
+   print LOGFILE "   <CPUCores>$tot_core_count</CPUCores>\n";
+   #print LOGFILE "   <CPUEnabledCores>$tot_core_enabled</CPUEnabledCores>\n";
+   print LOGFILE "   <CPULogicalProcessors/>\n";
+   #print LOGFILE "   <CPUMaxSpeed>$cpu_speed[0] MHz</CPUMaxSpeed>\n";
+   #print LOGFILE "   <CPUCurrentSpeed>$cur_speed[0] MHz</CPUCurrentSpeed>\n";
+   #print LOGFILE "  </CPUDetail>\n";
+   #print LOGFILE "  <MemoryDetail>\n";
+   #print LOGFILE "    <MemorySlots>$total_dim_slots</MemorySlots>\n";
+   #print LOGFILE "    <OccupiedSlots>$number_dimms</OccupiedSlots>\n";
+   print LOGFILE "   <Memory>$memory_size MB</Memory>\n";
+   print LOGFILE "   <ExtendedMemory/>\n";
+   #print LOGFILE "  </MemoryDetail>\n";
+ } else {
+   print LOGFILE "   <SourceHardware/>\n";
+   print LOGFILE "   <DestinationHardware/>\n";
+   print LOGFILE "   <CPUSockets/>\n";
+   print LOGFILE "   <CPUCores/>\n";
+   print LOGFILE "   <CPULogicalProcessors/>\n";
+   print LOGFILE "   <Memory/>\n";
+   print LOGFILE "   <ExtendedMemory/>\n";
+ }
+}
+#***********************************************************************
+# Get the information of swap devices that are defined on the system
+#***********************************************************************
+sub swap {
+  @page=`/sbin/swapon -s`;
+  shift(@page);
+  print LOGFILE " <PageFiles_Table>\n";
+  my $counter = 0;
+  foreach $swap (@page) {
+   ($slv,$stype,$ssize,$sused,$sprio) = split /\s+/, $swap;
+   print LOGFILE "  <PageFiles>\n";
+   print LOGFILE "   <FQDN>$fqdn_gloabl</FQDN>\n";
+   print LOGFILE "   <Location>$slv</Location>\n";
+   print LOGFILE "   <Size>$ssize</Size>\n";
+   print LOGFILE "   <Type>$stype</Type>\n";
+   print LOGFILE "   <Used>$sused</Used>\n";
+   print LOGFILE "   <Priority>$sprio</Priority>\n";
+   print LOGFILE "  </PageFiles>\n";
+   $counter++;
+  }
+ print LOGFILE " </PageFiles_Table>\n";
+}
+
+  
+#***********************************************************************
+# Check if the system is a virtual machine, this only checks for 
+# VMWare systems there could be others?
+#***********************************************************************
+sub virtualmachine {
+   #my $manufacturer = `/usr/sbin/dmidecode -s system-manufacturer`;
+   if ( $manufacturer =~ /VMware, Inc./ ) {
+   print LOGFILE "   <VirtualMachine>yes</VirtualMachine>\n";
+   } else {
+     print LOGFILE "   <VirtualMachine>no</VirtualMachine>\n";
+   }
+   print LOGFILE "   <VMCluster/>\n";
+   print LOGFILE "   <OSClustered/>\n";
+   print LOGFILE "   <ClusterNode1/>\n";
+   print LOGFILE "   <ClusterNode2/>\n";
+   print LOGFILE "   <ClusterNode3/>\n";
+   print LOGFILE "   <ClusterNode4/>\n";
+
+}
+#***********************************************************************
+# Check what volume groups exist on the system
+#***********************************************************************
+sub volumegroups {
+ my $count = 0;
+   print LOGFILE " <VolumeGroup_Table>\n";
+   my @volumegroup= `/usr/sbin/vgs --noheadings --aligned --separator ";"`;
+   my $pv;
+   my $vg;
+   my $lv;
+   my $sn;
+   my $Attr;
+   my $size;
+   my $free;
+   while ( $volumegroup[$count] ) {
+    ($vg, $pv, $lv, $sn, $Attr, $size, $free ) = split /;/, trim($volumegroup[$count]);
+      chomp($vg);
+      print LOGFILE "  <VolumeGroup>\n";
+      print LOGFILE "   <FQDN>$fqdn_gloabl</FQDN>\n";
+      print LOGFILE "   <Name>$vg</Name>\n";
+      print LOGFILE "   <NumberPV>$pv</NumberPV>\n";
+      print LOGFILE "   <NumberLV>$lv</NumberLV>\n";
+      print LOGFILE "   <Attributes>$Attr</Attributes>\n";
+      print LOGFILE "   <Size>$size</Size>\n";
+      print LOGFILE "   <Free>$free</Free>\n";
+      print LOGFILE "  </VolumeGroup>\n";
+      $count++;
+   }
+   print LOGFILE " </VolumeGroup_Table>\n";
+}
+#***********************************************************************
+# Check what dm-multipath devices are on the system, might need to code
+# something for powerpath?
+#***********************************************************************
+sub whatmpathdevices {
+   print LOGFILE " <MultiPathDevices_Table>\n";
+   my @whatmpathdevice= `/sbin/multipath -l`;
+   my $counter = 0;
+   foreach $line (@whatmpathdevice) {
+    if ( $line =~ /mpath/ ) {
+     ($mpath,$wwid, $dmpath, undef) = split /\s+/, $line;
+     print LOGFILE "  <MultiPathDevices>\n";
+     print LOGFILE "   <FQDN>$fqdn_gloabl</FQDN>\n";
+     print LOGFILE "   <Path>$mpath</Path>\n";
+     print LOGFILE "   <WWid>$wwid</WWid>\n";
+     print LOGFILE "   <DN>$dmpath</DN>\n";
+     #if ( $line =~ /size/ ) {
+     #    chomp($line);
+     #    print LOGFILE "   <INFO>$line</INFO>\n";
+     #} else {
+     #  print LOGFILE "   <INFO/>\n";
+     #}
+     print LOGFILE "  </MultiPathDevices>\n";
+    $counter++;
+    }
+   }
+   print LOGFILE " </MultiPathDevices_Table>\n";
+}
+#***********************************************************************
+# check what physical volumes are defined on the systems.
+#***********************************************************************
+sub physicalvolumes {
+   print LOGFILE " <PhysicalVolumes_Table>\n";
+   my @physicalvolume= `/usr/sbin/pvs --noheadings --aligned --separator ";"`;
+   my $pv;
+   my $vg;
+   my $fmt;
+   my $attr;
+   my $psize;
+   my $pfree;
+   my $count = 0;
+   while ($physicalvolume[$count] ) {
+      ($pv,$vg,$fmt,$attr,$psize,$pfree) = split /;/, trim($physicalvolume[$count]);
+      print LOGFILE "  <PhysicalVolumes>\n";
+      print LOGFILE "   <FQDN>$fqdn_gloabl</FQDN>\n";
+      print LOGFILE "   <PV>$pv</PV>\n";
+      print LOGFILE "   <VG>$vg</VG>\n";
+      print LOGFILE "   <FMT>$fmt</FMT>\n";
+      print LOGFILE "   <ATTR>$attr</ATTR>\n";
+      print LOGFILE "   <PSIZE>$psize</PSIZE>\n";
+      print LOGFILE "   <PFREE>$pfree</PFREE>\n";
+      print LOGFILE "  </PhysicalVolumes>\n";
+      $count++;
+   }
+   print LOGFILE " </PhysicalVolumes_Table>\n";
+}
+#***********************************************************************
+# Check what logical volumes are defined on the system.
+#***********************************************************************
+sub logicalvolumes {
+   print LOGFILE " <LogicalVolumes_Table>\n";
+
+   my @logicalvolume= `/usr/sbin/lvs --noheadings --aligned --separator ";"`;
+   my $lv;
+   my $vg;
+   my $attr;
+   my $lsize;
+   my $origin;
+   my $move;
+   my $count = 0;
+   while ($logicalvolume[$count] ) {
+      ($lv,$vg,$attr,$lsize,$origin,$move,undef,undef,undef) = split /;/, trim($logicalvolume[$count]);
+      chomp($lv,$vg,$attr,$lsize,$origin,$move);
+         print LOGFILE "  <LogicalVolumes>\n";
+         print LOGFILE "   <FQDN>$fqdn_gloabl</FQDN>\n";
+         print LOGFILE "   <LV>$lv</LV>\n";
+         print LOGFILE "   <VG>$vg</VG>\n";
+         print LOGFILE "   <ATTR>$attr</ATTR>\n";
+         print LOGFILE "   <LSIZE>$lsize</LSIZE>\n";
+         print LOGFILE "   <ORIGIN_SNAP_PCT>$origin</ORIGIN_SNAP_PCT>\n";
+         print LOGFILE "   <MOVE_LOG_COPY_PCT>$move</MOVE_LOG_COPY_PCT>\n";
+         print LOGFILE "  </LogicalVolumes>\n";
+      $count++;
+   }
+   print LOGFILE " </LogicalVolumes_Table>\n";
+}
+#***********************************************************************
+# Output what entries are defined in /etc/fstab all hashed out entries are
+# ignored.
+#***********************************************************************
+sub fstab {
+   $fstab = "/etc/fstab";
+   print LOGFILE " <Fstab_Table>\n";
+   if ( -e $fstab ) {
+    @fstab = `/bin/cat $fstab`;
+    foreach $mount (@fstab) {
+     if ($mount !~ /^#/ ) {
+      if ($mount !~ /^$/ ) {
+       chomp($mount);
+        print LOGFILE "  <Fstab>\n";
+        print LOGFILE "   <FQDN>$fqdn_gloabl</FQDN>\n";
+        print LOGFILE "   <Entry>$mount</Entry>\n";
+        print LOGFILE "  </Fstab>\n";
+      }
+     }
+    }
+   }
+   print LOGFILE " </Fstab_Table>\n";
+
+   
+}
+#***********************************************************************
+# Check what filesystems are mounted on the system.
+#***********************************************************************
+sub mountpoints {
+    print LOGFILE " <MountPoints_Table>\n";
+    my @mount_points= `/bin/mount`;
+    my $lv;
+    my $mountpt;
+    my $fstype;
+    my $opts;
+    my $mount_counter = 0;
+    for $mount (@mount_points) {
+     ($lv,undef, $mountpt, undef, $fstype, $opts) = split /\s+/, $mount;
+     print LOGFILE "  <MountPoints>\n";
+     print LOGFILE "   <FQDN>$fqdn_gloabl</FQDN>\n";
+     print LOGFILE "   <Device>$lv</Device>\n";
+     print LOGFILE "   <MountPoint>$mountpt</MountPoint>\n";
+     print LOGFILE "   <FSType>$fstype</FSType>\n";
+     print LOGFILE "   <MountOptions>$opts</MountOptions>\n";
+     print LOGFILE "  </MountPoints>\n";
+     $mount_counter++;
+   }
+   print LOGFILE " </MountPoints_Table>\n";
+}
+#***********************************************************************
+# Display the network configuration.
+#***********************************************************************
+sub network {
+   my @iparray= `/sbin/ifconfig -a`;
+   my $ipaddr;
+   my $bcast;
+   my $mask;
+   my $counter = 0;
+
+   print LOGFILE " <NetworkOld_Table>\n";
+   foreach $line (@iparray) {
+      chomp($line);
+      if ( $line =~ /Link encap:/ )
+      {
+         $nicinfo = $line;
+         $nicinfo =~ s/\s+/,/g;
+         ($nic,undef,$type,undef,$hwaddr) = split /,/, $nicinfo;
+         (undef,$itype) = split /:/, $type;
+      }
+      if ( $line =~ /inet addr:/ )
+      {
+	   $line =~ s/\s+/:/g;
+           if ( $line =~ /Bcast:/ ) {
+	    (undef,undef,undef,$ipaddr,undef,$bcast,undef,$mask) = split /:/, $line;
+                print LOGFILE "  <NetworkOld>\n";
+                print LOGFILE "   <FQDN>$fqdn_gloabl</FQDN>\n";
+		print LOGFILE "   <InterfaceName>$nic</InterfaceName>\n";
+                print LOGFILE "   <MACAddress>$hwaddr</MACAddress>\n";
+                print LOGFILE "   <IP1>$ipaddr</IP1>\n";
+                print LOGFILE "   <Mask>$mask</Mask>\n";
+                #print LOGFILE "   <Broadcast>$bcast</Broadcast>\n";
+   		print LOGFILE "   <Gateway/>\n";
+		print LOGFILE "   <VLAN/>\n";
+		print LOGFILE "   <DHCPEnabled/>\n";
+   		print LOGFILE "   <IP2/>\n";
+   		print LOGFILE "   <IP3/>\n";
+   		print LOGFILE "   <IP4/>\n";
+   		print LOGFILE "   <IP5/>\n";
+   		print LOGFILE "   <IP6/>\n";
+   		print LOGFILE "   <IP7/>\n";
+   		print LOGFILE "   <IP8/>\n";
+   		print LOGFILE "   <IP9/>\n";
+   		print LOGFILE "   <IP10/>\n";
+                print LOGFILE "  </NetworkOld>\n";
+	    $counter++;
+           } else {
+	    (undef,undef,undef,$ipaddr,undef,$mask) = split /:/, $line;
+                print LOGFILE "  <NetworkOld>\n";
+                print LOGFILE "   <FQDN>$fqdn_gloabl</FQDN>\n";
+                print LOGFILE "   <InterfaceName>$nic</InterfaceName>\n";
+                print LOGFILE "   <MACAddress>$hwaddr</MACAddress>\n";
+                print LOGFILE "   <IP1>$ipaddr</IP1>\n";
+                print LOGFILE "   <Mask>$mask</Mask>\n";
+                print LOGFILE "   <Gateway/>\n";
+                print LOGFILE "   <VLAN/>\n";
+                print LOGFILE "   <DHCPEnabled/>\n";
+                print LOGFILE "   <IP2/>\n";
+   		print LOGFILE "   <IP3/>\n";
+   		print LOGFILE "   <IP4/>\n";
+   		print LOGFILE "   <IP5/>\n";
+   		print LOGFILE "   <IP6/>\n";
+   		print LOGFILE "   <IP7/>\n";
+   		print LOGFILE "   <IP8/>\n";
+   		print LOGFILE "   <IP9/>\n";
+   		print LOGFILE "   <IP10/>\n";
+                print LOGFILE "  </NetworkOld>\n";
+	    $counter++;
+           }
+      }
+   }
+   print LOGFILE " </NetworkOld_Table>\n";
+
+}
+#***********************************************************************
+# Display current routing table.
+#***********************************************************************
+sub routing_table {
+    print LOGFILE " <RoutingTable_Table>\n";
+    my @routing_table = `/bin/netstat -rn`;
+    my $route_counter = 0;
+    # remove first line from array, this would be the Kernel IP routing table
+    shift(@routing_table);
+    # remove first line from array, this would now be "Destination     Gateway         Genmask         Flags   MSS Window  irtt Iface"
+    shift(@routing_table);
+    foreach $route (@routing_table) {
+     ($destination, $gateway, $netmask, $flags, $mss, $window, $irtt, $Iface) = split /\s+/, $route;
+     print LOGFILE "  <RoutingTable>\n";
+     print LOGFILE "   <FQDN>$fqdn_gloabl</FQDN>\n";
+     print LOGFILE "   <Destination>$destination</Destination>\n";
+     print LOGFILE "   <Gateway>$gateway</Gateway>\n";
+     print LOGFILE "   <Netmask>$netmask</Netmask>\n";
+     print LOGFILE "   <Flags>$flags</Flags>\n";
+     print LOGFILE "   <Mss>$mss</Mss>\n";
+     print LOGFILE "   <Window>$window</Window>\n";
+     print LOGFILE "   <Irtt>$irtt</Irtt>\n";
+     print LOGFILE "   <Interface>$Iface</Interface>\n";
+     print LOGFILE "  </RoutingTable>\n";
+     $route_counter++;
+   }
+   print LOGFILE " </RoutingTable_Table>\n";
+}
+
+#***********************************************************************
+# Display current runlevel and also check the /etc/inittab file.
+#***********************************************************************
+sub runlevel {
+   my $runlevel= `/usr/bin/who -r`;
+   $runlevel =~ s/\s+/,/g;
+   (undef,undef,$rlevel,$rbootdate,$rbootime,undef) = split /,/, $runlevel;
+   $filerunleve = `/bin/grep "^id" /etc/inittab`;
+   (undef,$flevel,undef,undef) = split /:/, $filerunleve;
+   print LOGFILE "   <CurrentRunLevel>$rlevel</CurrentRunLevel>\n";
+   print LOGFILE "   <DefaultRunLevel>$flevel</DefaultRunLevel>\n";
+   print LOGFILE "   <LastBoot>$rbootdate</LastBoot>\n";
+   #print LOGFILE "   <LastRbootTime>$rbootime</LastRbootTime>\n";
+   print LOGFILE "   <LastShutdown/>\n";
+   #print LOGFILE "  </RunLevel>\n";
+}
+#***********************************************************************
+# Display what scripts are used by the default runlevel.
+#***********************************************************************
+sub scripts {
+   print LOGFILE " <RunLevelScripts_Table>\n";
+   my @scripts;
+   if ($flevel =~ /3/ )
+   {
+      $directory = "/etc/rc.d/rc3.d/";
+      @scripts = `/bin/ls /etc/rc.d/rc3.d`;
+   } elsif  ($flevel =~ /1/ ) {
+      $directory = "/etc/rc.d/rc1.d/";
+      @scripts = `/bin/ls /etc/rc.d/rc1.d`;
+   } elsif  ($flevel =~ /2/ ) {
+      $directory = "/etc/rc.d/rc2.d/";
+      @scripts = `/bin/ls /etc/rc.d/rc2.d`;
+   } elsif  ($flevel =~ /4/ ) {
+      $directory = "/etc/rc.d/rc4.d/";
+      @scripts = `/bin/ls /etc/rc.d/rc4.d`;
+   } elsif  ($flevel =~ /5/ ) {
+      $directory = "/etc/rc.d/rc5.d/";
+      @scripts = `/bin/ls /etc/rc.d/rc5.d`;
+   } elsif  ($flevel =~ /6/ ) {
+      $directory = "/etc/rc.d/rc1.6/";
+      @scripts = `/bin/ls /etc/rc.d/rc6.d`;
+   } 
+
+   foreach $line (@scripts)
+   {
+     chomp($line);
+     print LOGFILE "  <RunLevelScripts>\n";
+     print LOGFILE "   <FQDN>$fqdn_gloabl</FQDN>\n";
+     print LOGFILE "   <Script>$directory$line</Script>\n";
+     print LOGFILE "  </RunLevelScripts>\n";
+   }
+    print LOGFILE " </RunLevelScripts_Table>\n";
+}
+#***********************************************************************
+# Display any fiberchannel card information.
+#***********************************************************************
+sub fc_hosts {
+  print LOGFILE " <FiberChannel_Table>\n"; 
+  my $counter = 0;
+  if ( -d "/sys/class/fc_host" )
+  {
+    opendir(FCHOST, "/sys/class/fc_host") || die("Cannot open directory");
+    @files = readdir(FCHOST);
+    foreach $line (@files)
+    {
+     if ( $line =~ /host/ )
+     {
+      $port_name = `/bin/cat /sys/class/fc_host/$line/port_name`;
+      chomp($port_name);
+      $node_name = `/bin/cat /sys/class/fc_host/$line/node_name`;
+      chomp($node_name);
+      $card_speed = `/bin/cat /sys/class/fc_host/$line/speed`;
+      chomp($card_speed);
+      $fabric_name = `/bin/cat /sys/class/fc_host/$line/fabric_name`;
+      chomp($fabric_name);
+      print LOGFILE "  <FiberChannel>\n"; 
+      print LOGFILE "   <FQDN>$fqdn_gloabl</FQDN>\n";
+      print LOGFILE "   <Name>$line</Name>\n";
+      print LOGFILE "   <PortName>$port_name</PortName>\n";
+      print LOGFILE "   <NodeName>$node_name</NodeName>\n";
+      print LOGFILE "   <FabricName>$fabric_name</FabricName>\n";
+      print LOGFILE "   <PortSpeed>$card_speed</PortSpeed>\n";
+      print LOGFILE "  </FiberChannel>\n";
+      $counter++; 
+     }
+    }
+  }
+  print LOGFILE " </FiberChannel_Table>\n"; 
+ closedir(FCHOST);
+}
+#***********************************************************************
+# Display the services information using chkconfig --list
+#***********************************************************************
+sub chkconfig {
+ print LOGFILE " <Services_Table>\n";
+ @chkconfig = `/sbin/chkconfig --list`;
+ foreach $line (@chkconfig) {
+  if ( $line =~ /3:/ )
+  {
+   $chkconfig = $line;
+   $chkconfig =~ s/\s+/:/g;
+   ($service,undef,$rl0,undef,$rl1,undef,$rl2,undef,$rl3,undef,$rl4,undef,$rl5,undef,$rl6) = split /:/, $chkconfig;
+   $service =~ s/://g;
+   chomp($service);
+   if ( $service =~ /smb/ )
+   {
+     $smb = "yes";
+   } 
+   if ( -e "/sbin/service" ) {
+     
+    $status = `/sbin/service $service status`;
+    chomp($status);
+    $status = trim($status);
+
+    if ( $service =~ /tsm-client/ ) {
+      $status =~ s/running.*$/running/g;
+    }
+    
+   } else {
+    $status = "";
+   }
+   print LOGFILE "  <Services>\n";
+   print LOGFILE "   <FQDN>$fqdn_gloabl</FQDN>\n";
+   print LOGFILE "   <Name>$service</Name>\n";
+   print LOGFILE "   <DisplayName/>\n";
+   print LOGFILE "   <StartupType/>\n";
+   print LOGFILE "   <Account/>\n";
+   print LOGFILE "   <Status>$status</Status>\n";
+   print LOGFILE "   <StopForMigration/>\n";
+   print LOGFILE "   <RUNLEVEL_0>$rl0</RUNLEVEL_0>\n";
+   print LOGFILE "   <RUNLEVEL_1>$rl1</RUNLEVEL_1>\n";
+   print LOGFILE "   <RUNLEVEL_2>$rl2</RUNLEVEL_2>\n";
+   print LOGFILE "   <RUNLEVEL_3>$rl3</RUNLEVEL_3>\n";
+   print LOGFILE "   <RUNLEVEL_4>$rl4</RUNLEVEL_4>\n";
+   print LOGFILE "   <RUNLEVEL_5>$rl5</RUNLEVEL_5>\n";
+   print LOGFILE "   <RUNLEVEL_6>$rl6</RUNLEVEL_6>\n";
+   print LOGFILE "  </Services>\n";
+  }
+ if ( $line =~ /(w+)+(w+)/) {
+   print $line;
+ }
+ }
+ print LOGFILE " </Services_Table>\n";
+
+}
+#***********************************************************************
+# Check if samba is enabled.
+#***********************************************************************
+sub samba {
+  print LOGFILE " <Samba_Table>\n";
+  if ( $smb =~ /yes/ )
+  {
+   print LOGFILE "    <AT_SYSTEM_BOOT>yes</AT_SYSTEM_BOOT>\n";
+   @smbstatus = `/usr/bin/smbstatus -S | egrep -v 'Service|---'`;
+    foreach $line (@smbstatus) {
+	($smb_share,undef,$machine,$wday,$month,$time,$year) = split /\s+/, $line;
+        print LOGFILE "  <Samba>\n";
+        print LOGFILE "   <FQDN>$fqdn_gloabl</FQDN>\n";
+	print LOGFILE "   <SMBshare>$smb_share</SMBshare>\n";
+	print LOGFILE "   <SMBremotemachine>$machine</SMBremotemachine>\n";
+	print LOGFILE "   <SMBconnectionTime>$wday $month $time $year</SMBconnectionTime>\n";
+	print LOGFILE "   <SMBbootTime>yes</SMBbootTime>\n";
+        print LOGFILE "  </Samba>\n";
+    }
+  }else {
+   print LOGFILE "  <Samba>\n";
+   print LOGFILE "   <FQDN>$fqdn_gloabl</FQDN>\n";
+   print LOGFILE "   <SMBshare/>\n";
+   print LOGFILE "   <SMBremotemachine/>\n";
+   print LOGFILE "   <SMBconnectionTime/>\n";
+   print LOGFILE "   <SMBbootTime>no</SMBbootTime>\n";
+   print LOGFILE "  </Samba>\n";
+  }
+  print LOGFILE " </Samba_Table>\n";
+}
+#***********************************************************************
+# Display any NFS mounts on the system.
+#***********************************************************************
+sub nfs_mounts {
+   print LOGFILE " <NetworkFilesystem_Table>\n";
+   @nfs_mounts = `mount | grep nfs | grep "type nfs"`;
+   my $counter = 0;
+   foreach $line (@nfs_mounts) {
+     ($remote_host,undef,$local_mp,undef,undef,$options) = split /\s+/,$line;
+     print LOGFILE "  <NetworkFilesystem>\n";
+     print LOGFILE "   <FQDN>$fqdn_gloabl</FQDN>\n";
+     print LOGFILE "   <remoteshare>$remote_host</remoteshare>\n";
+     print LOGFILE "   <LocalMount>$local_mp</LocalMount>\n";
+     print LOGFILE "   <Options>$options</Options>\n";
+     print LOGFILE "  </NetworkFilesystem>\n";
+     $counter++;
+   }
+   print LOGFILE " </NetworkFilesystem_Table>\n";
+}
+#***********************************************************************
+# Check status of SELINUX from config file and on running system.
+#***********************************************************************
+sub selinux {
+   $selinux_file = "/etc/selinux/config";
+  if ( -e $selinux_file ) {
+   $selinux_stat = `/usr/sbin/getenforce`;
+   $selinux_conf = `/bin/grep "^SELINUX=" /etc/selinux/config`;
+   $selinux_type = `/bin/grep "^SELINUXTYPE=" /etc/selinux/config`;
+   $selinux_defs = `/bin/grep "^SETLOCALDEFS=" /etc/selinux/config`;
+   chomp($selinux_stat);
+   chomp($selinux_conf);
+   chomp($selinux_type);
+   chomp($selinux_defs);
+
+   (undef,$selinux_conf1) = split /=/, $selinux_conf;
+   (undef,$selinux_type1) = split /=/, $selinux_type;
+   (undef,$selinux_defs1) = split /=/, $selinux_defs;
+
+ 
+   print LOGFILE " <SeLinux_Table>\n";
+   print LOGFILE "  <SeLinux>\n";
+   print LOGFILE "   <FQDN>$fqdn_gloabl</FQDN>\n";
+   print LOGFILE "   <Status>$selinux_stat</Status>\n";
+   print LOGFILE "   <Cfstatus>$selinux_conf1</Cfstatus>\n";
+   print LOGFILE "   <cftype>$selinux_type1</cftype>\n";
+   print LOGFILE "   <Cfdefs>$selinux_defs1</Cfdefs>\n";
+   print LOGFILE "  </SeLinux>\n";
+   print LOGFILE " </SeLinux_Table>\n";
+  }
+}
+sub hostfiles {
+    my @hostfiles = qw(hosts nsswitch.conf resolv.conf);
+    my $file_line;
+    foreach $file_line (@hostfiles) {
+     if ( -e "/etc/$file_line" ) {
+        open(FILE, "/etc/$file_line" ) || die("Cannot open /etc/$file_line");
+        @File_list=<FILE>;
+        close(FILE);
+        $new_line = $file_line;
+        $file_line =~ s/\.//g;
+        print LOGFILE " <$file_line\_Table>\n";
+        #print LOGFILE "  <$file_line>\n";
+        foreach $line_in_file (@File_list) {
+         if ($line_in_file !~ /^#/ ) {
+          if ($line_in_file !~ /^$/ ) {
+              chomp($line_in_file);
+              print LOGFILE "  <$file_line>\n";
+	      print LOGFILE "   <FQDN>$fqdn_gloabl</FQDN>\n";
+              print LOGFILE "   <$file_line\File>/etc/$new_line</$file_line\File>\n";
+              print LOGFILE "   <Entry>$line_in_file</Entry>\n";
+              print LOGFILE "  </$file_line>\n";
+           }
+         }
+        }
+     #print LOGFILE "  </$file_line>\n";
+     print LOGFILE " </$file_line\_Table>\n";
+     } 
+    }
+}
+#***********************************************************************
+# Display the contents of /etc/modprobe.conf and the current loaded modules.
+# on the system.
+#***********************************************************************
+sub kernel {
+   $modprobe = "/etc/modprobe.conf";
+   print LOGFILE " <ModprobeFile_Table>\n";
+   if ( -e $modprobe ) {
+    @modprobe = `/bin/cat $modprobe`;
+    foreach $line (@modprobe) {
+     if ($line !~ /^#/ ) {
+      if ($line !~ /^$/ ) {
+       chomp($line);
+        print LOGFILE "  <ModprobeFile>\n";
+        print LOGFILE "   <FQDN>$fqdn_gloabl</FQDN>\n";
+        print LOGFILE "   <Location>$modprobe</Location>\n";
+        print LOGFILE "   <Entry>$line</Entry>\n";
+	print LOGFILE "  </ModprobeFile>\n";
+      }
+     }
+    }
+   }
+   print LOGFILE " </ModprobeFile_Table>\n";
+   print LOGFILE " <LoadedModules_Table>\n";
+    @lsmod = `/sbin/lsmod`;
+    # remove the first element in the array.
+    shift(@lsmod);
+    foreach $line (@lsmod) {
+     chomp($line);
+     print LOGFILE "  <LoadedModules>\n";
+     print LOGFILE "   <FQDN>$fqdn_gloabl</FQDN>\n";
+     print LOGFILE "   <Loaded>$line</Loaded>\n";
+     print LOGFILE "  </LoadedModules>\n";
+    }
+    print LOGFILE " </LoadedModules_Table>\n";
+}
+
+#***********************************************************************
+# Display the snmp information on the system.
+#***********************************************************************
+sub snmp {
+  $snmpdconf = "/etc/snmp/snmpd.conf";
+   print LOGFILE " <SNMP_Table>\n";
+   if ( -e $snmpdconf ) {
+    @snmpdconf = `/bin/cat $snmpdconf`;
+    foreach $snmpline (@snmpdconf) {
+     if ($snmpline !~ /^#/ ) {
+      if ($snmpline !~ /^$/ ) {
+        chomp($snmpline);
+           $snmpline =~ s/&/\&amp;/g;
+           $snmpline =~ s/>/\&gt;/g;
+           $snmpline =~ s/</\&lt;/g;
+        print LOGFILE "  <SNMP>\n";
+        print LOGFILE "   <FQDN>$fqdn_gloabl</FQDN>\n";
+        print LOGFILE "   <Entry>$snmpline</Entry>\n";
+        print LOGFILE "  </SNMP>\n";
+      }
+     }
+    }
+   }
+   print LOGFILE " </SNMP_Table>\n";
+}
+#***********************************************************************
+# Display any crontab files and there contents.
+#***********************************************************************
+sub cron {
+  $crondir = "/var/spool/cron";
+  print LOGFILE " <ScheduledTasks_Table>\n";
+  opendir(CRONDIR, "$crondir") || die("Cannot open directory");
+  @files = readdir(CRONDIR);
+  # remove the . from the array
+  #shift(@files);
+  # remove the .. from the array
+  #shift(@files);
+  $size = scalar(@files);
+  my $Count = 1;
+  #print LOGFILE "@files array is $size in size";
+  foreach $user (@files) {
+   if (( $user !~ /\./ ) && ( $user !~ /\.\./ )) {
+    #print LOGFILE "        <UserFile$counter>\n";
+    open(CRON, "$crondir/$user") || die("Cannot open $crondir/$user");
+    @cron_entries=<CRON>;
+    foreach $entry (@cron_entries) {
+    $entry =~ s/&/\&amp;/g;
+    $entry =~ s/>/\&gt;/g;
+    $entry =~ s/</\&lt;/g;
+      chomp($entry);
+      print LOGFILE "  <ScheduledTasks>\n";
+      print LOGFILE "   <FQDN>$fqdn_gloabl</FQDN>\n";
+      print LOGFILE "   <Name/>\n";
+      print LOGFILE "   <Application/>\n";
+      print LOGFILE "   <Status/>\n";
+      print LOGFILE "   <Parameters/>\n";
+      print LOGFILE "   <Account>$user</Account>\n";
+      print LOGFILE "   <CronTask>$entry</CronTask>\n";
+      print LOGFILE "  </ScheduledTasks>\n";
+    close(CRON);
+    if ( $size !~ /$Count/ ) {
+      $Count++;
+    }
+    }
+   }
+  closedir(CRONDIR);
+ }
+  print LOGFILE " </ScheduledTasks_Table>\n";
+
+}
+
+#***********************************************************************
+# Display all installed packages on the system.
+#***********************************************************************
+sub packageinfo {
+    my @package_list = `/usr/bin/yum list installed 2> /dev/null`;
+    print LOGFILE " <Applications_Table>\n";
+
+    foreach $package (@package_list) {
+     if ( $package =~ /installed/ ) {
+        ($package,$version,undef) = split /\s+/, $package;
+        if ( $package =~ /TIVsm-BA/ ) {
+            $tsm = "installed";
+            $tsm_package = $package;
+	    $tsm_version = $version;
+        }
+        print LOGFILE "  <Applications>\n";
+        print LOGFILE "   <FQDN>$fqdn_gloabl</FQDN>\n";
+        print LOGFILE "   <Name>$package</Name>\n";
+        print LOGFILE "   <Version>$version</Version>\n";
+        print LOGFILE "   <SecurityDevice/>\n";
+        print LOGFILE "   <SecurityDeviceLicensingApplication/>\n";
+        print LOGFILE "   <LicenseUpdate/>\n";
+        print LOGFILE "   <OldKey/>\n";
+        print LOGFILE "   <NewKey/>\n";
+        print LOGFILE "  </Applications>\n";
+     }
+    }
+    print LOGFILE " </Applications_Table>\n";
+}
+     
+#***********************************************************************
+# Function used to trim any whitespace from a variable passed into it.
+#***********************************************************************
+sub trim($)
+{
+	my $string = shift;
+        chomp($string);
+	$string =~ s/^\s+//;
+	$string =~ s/\s+$//;
+	return $string;
+}
+
+sub tsm {
+   if ( $tsm =~ /installed/ ) 
+   {
+    $tsm_ops_dir = "/opt/tivoli/tsm/client/ba/bin";
+
+    if ( -e $tsm_ops_dir ) 
+    {
+       if ( -e "$tsm_ops_dir/dsm.sys" ) 
+       {
+        open(TSM, "$tsm_ops_dir/dsm.sys" ) || die("Cannot open $tsm_ops_dir/dsm.sys");
+        @TSM_file=<TSM>;
+        close(TSM);
+
+         foreach $file_line (@TSM_file) 
+         {
+          if ($file_line !~ /^\*/ ) 
+          {
+            if ($file_line !~ /^$/ ) 
+            {
+	     # Trim all whitespace from the line
+	     $file_line = trim($file_line);
+	     chomp($file_line);
+
+ 	      switch ($file_line) 
+              {
+		   case /SErvername/i 		{ (undef, $srvname) = split /\s+/, $file_line; print $srvname ; next}
+		   case /COMMMethod/i 		{ (undef, $commmeth) = split /\s+/, $file_line; next}
+		   case (/TCPPort/) 		{ (undef, $tcpport) = split /\s+/, $file_line; next}
+		   case (/TCPServeraddress/) 	{ (undef, $serveradd) = split /\s+/, $file_line; next}
+		   case (/HTTPPort/) 		{ (undef, $httpport) = split /\s+/, $file_line; next}
+		   case (/nodename/) 		{ (undef, $nodename) = split /\s+/, $file_line; next}
+		   case (/passwordaccess/) 	{ (undef, $passwdacc) = split /\s+/, $file_line; next}
+		   case (/schedmode/) 		{ (undef, $schedmode) = split /\s+/, $file_line; next}
+		   case (/errorlogname/) 	{ (undef, $errorlog) = split /\s+/, $file_line; next}
+		   case (/errorlogretention/) 	{ (undef, $errolorret,$edm) = split /\s+/, $file_line; next}
+		   case (/schedlogname/) 	{ (undef, $schedlog) = split /\s+/, $file_line; next}
+		   case (/schedlogretention/) 	{ (undef, $schedrret,$sdm) = split /\s+/, $file_line; next}
+		   case (/RESOURCE/) 		{ (undef, $resource) = split /\s+/, $file_line; next}
+		   case (/Managedservices/) 	{ (undef, $managedsrv,$managedsrv1) = split /\s+/, $file_line; next}
+		   case (/inclexcl/) 		{ (undef, $inclexcl) = split /\s+/, $file_line; }
+	      }
+            }
+          }
+         } 
+         &tsm_print;
+        }
+      }
+     }
+    # rite go get what is in the inclexcl file and output it.
+    #
+    print LOGFILE " <TSMinclexcl_Table>\n";
+    if ( -e "$inclexcl" )
+    {
+     open(INCTSM, "$inclexcl" ) || die("Cannot open $tsm_ops_dir/dsm.sys");
+     @incl_file=<INCTSM>;
+     close(INCTSM);
+     foreach $inc_line (@incl_file)
+     {
+      if ($inc_line !~ /^\*/ )
+      {
+        if ($inc_line !~ /^$/ )
+        {
+		print LOGFILE "  <TSMinclexcl>\n";
+		print LOGFILE "   <FQDN>$fqdn_gloabl</FQDN>\n";
+	        print LOGFILE "   <Location>$inclexcl</Location>\n";
+		print LOGFILE "   <Entry>$inc_line</Entry>\n";
+		print LOGFILE "  </TSMinclexcl>\n";
+	}
+      }
+     }
+     
+    } else {
+	print LOGFILE "  <TSMinclexcl>\n";
+ 	print LOGFILE "   <FQDN>$fqdn_gloabl</FQDN>\n";
+	print LOGFILE "   <Location>$inclexcl</Location>\n";
+	print LOGFILE "   <Entry>NO Entries</Entry>\n";
+	print LOGFILE "  </TSMinclexcl>\n";
+    }
+    print LOGFILE " </TSMinclexcl_Table>\n";
+   
+}
+sub tsm_print {
+print LOGFILE " <TSMLinux_Table>\n";
+print LOGFILE "  <TSMLinux>\n";
+print LOGFILE "   <FQDN>$fqdn_gloabl</FQDN>\n";
+ if ( $tsm =~ /installed/ )
+ {
+  print LOGFILE "   <Status>installed</Status>\n";
+  print LOGFILE "   <COMMMethod>$commmeth</COMMMethod>\n";
+  print LOGFILE "   <TCPPort>$tcpport</TCPPort>\n";
+  print LOGFILE "   <TCPServeraddress>$serveradd</TCPServeraddress>\n";
+  print LOGFILE "   <HTTPPort>$httpport</HTTPPort>\n";
+  print LOGFILE "   <nodename>$nodename</nodename>\n";
+  print LOGFILE "   <passwordaccess>$passwdacc</passwordaccess>\n";
+  print LOGFILE "   <schedmode>$schedmode</schedmode>\n";
+  print LOGFILE "   <errorlogname>$errorlog</errorlogname>\n";
+  print LOGFILE "   <errorlogretention>$errolorret $edm</errorlogretention>\n";
+  print LOGFILE "   <schedlogname>$schedlog</schedlogname>\n";
+  print LOGFILE "   <schedlogretention>$schedrret $sdm</schedlogretention>\n";
+  print LOGFILE "   <RESOURCE>$resource</RESOURCE>\n";
+  print LOGFILE "   <Managedservices>$managedsrv $managedsrv1</Managedservices>\n";
+  print LOGFILE "   <inclexcl>$inclexcl</inclexcl>\n";
+ } else {
+  print LOGFILE "    <Status>Not Installed</Status>\n";
+  print LOGFILE "    <COMMMethod/>\n";
+  print LOGFILE "    <TCPPort/>\n";
+  print LOGFILE "    <TCPServeraddress/>\n";
+  print LOGFILE "    <HTTPPort/>\n";
+  print LOGFILE "    <nodename/>\n";
+  print LOGFILE "    <passwordaccess/>\n";
+  print LOGFILE "    <schedmode/>\n";
+  print LOGFILE "    <errorlogname/>\n";
+  print LOGFILE "    <errorlogretention/>\n";
+  print LOGFILE "    <schedlogname/>\n";
+  print LOGFILE "    <schedlogretention/>\n";
+  print LOGFILE "    <RESOURCE/>\n";
+  print LOGFILE "    <Managedservices/>\n";
+  print LOGFILE "    <inclexcl/>\n";
+ }
+ print LOGFILE "  </TSMLinux>\n";
+ print LOGFILE " </TSMLinux_Table>\n";
+}
+sub user_info {
+    @files = qw( passwd group sudoers );
+    foreach $file_line (@files) {
+     if ( -e "/etc/$file_line" ) {
+        print LOGFILE " <etc$file_line\_Table>\n";
+        open(FILE, "/etc/$file_line" ) || die("Cannot open /etc/$file_line");
+	@File_list=<FILE>;
+	close(FILE);
+	foreach $line_in_file (@File_list) {
+        if ($line_in_file !~ /^\#/ ) {
+            if ($line_in_file !~ /^$/ ) {
+	      chomp($line_in_file);
+	      $line_in_file = trim($line_in_file);
+	      $line_in_file =~ s/&/\&amp;/g;
+              print LOGFILE "  <etc$file_line>\n";
+   	      print LOGFILE "   <FQDN>$fqdn_gloabl</FQDN>\n";
+	      print LOGFILE "   <Entry>$line_in_file</Entry>\n";
+              print LOGFILE "  </etc$file_line>\n";
+	    }
+        }
+       }
+
+      print LOGFILE " </etc$file_line\_Table>\n";
+     } 
+    }
+}
+#***********************************************************************
+# Function to copy the output file to a system.
+#***********************************************************************
+&copy_file;
+sub copy_file {
+    $identity_file = "./id_rsa" ;
+    $scp_command = "/usr/bin/scp" ;
+    $remote_user = "linuxgather";
+    $remote_host = "192.168.1.100";
+    $remote_fs = "/linuxgather";
+    $file = "$filename.xml";
+
+    if ( -e "/tmp/$file" ) {
+     if ( -e $identity_file ) {
+       if ( -e $scp_command ) {
+        $command_string = "$scp_command -o StrictHostKeyChecking=no -i $identity_file /tmp/$file $remote_user\@$remote_host:$remote_fs/$file";
+        system($command_string);
+        $returncode = $?;
+        if ($returncode !~ 0 ) {
+          print "$command_string failed\n";
+          exit 1;
+        } 
+       } else {
+         print "$scp_command doesn't exists you will need to manually copy the file to the EDC\n";
+       }
+     } else {
+      print "$identity_file doesn't exist won't be able to automate the copy of the $file to $remote_host\n";
+     }
+   } else {
+     print "$file doesn't exist, can't copy something that doesn't exist.\n";
+   }
+}
+#***********************************************************************
+#
+#				END OF SCRIPT
+#
+#***********************************************************************
